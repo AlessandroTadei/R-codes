@@ -1,0 +1,101 @@
+# Exercises on Linear Regression from "An Introduction to Statistical Learning" (p. 121)
+
+# Ex. 8
+library(ISLR)
+str(Auto)
+?Auto
+
+sum(is.na(Auto))
+
+# Regressing mpg (Y) onto horsepower (X)
+
+lm.fit <- lm(mpg~horsepower, data = Auto)
+summary(lm.fit)
+
+predict(lm.fit, data.frame(horsepower = 98), interval = "confidence")
+
+attach(Auto)
+plot(horsepower, mpg, pch = 20)
+abline(lm.fit, col = "red", lwd = 3)
+
+par(mfrow = c(2,2))
+plot(lm.fit)
+
+# Ex. 9
+pairs(~., data = Auto, main = "Scatterplot matrix")
+AutoNum <- Auto[ ,1:8] 
+cor(AutoNum)
+
+Mlt.lm.fit <- lm(mpg~., AutoNum)
+summary(Mlt.lm.fit)
+
+plot(Mlt.lm.fit)
+
+Mlt.lm.fit <- lm(mpg~.-acceleration, AutoNum)
+summary(Mlt.lm.fit)
+
+Mlt.lm.fit <- lm(mpg~.-acceleration-cylinders, AutoNum)
+summary(Mlt.lm.fit)
+
+# keep only significant predictors
+AutoNum <- AutoNum [ ,-c(2,6)]
+cor(AutoNum)
+
+# Delete predictors with collinearity
+AutoNum <- AutoNum [ ,-4]
+
+# study all the interactions / synergies
+Mlt.lm.fit <- lm(mpg~displacement*.+horsepower*.+year*., AutoNum)
+summary(Mlt.lm.fit)
+
+# erase, one by one, the interaction with the highest p-value
+## QUESTION!! How to identify only the column of p-values in the summary?
+Mlt.lm.fit <- lm(mpg~displacement*.+horsepower*.+year*.
+                 -displacement:year-displacement:origin-year:origin-horsepower:origin, AutoNum)
+summary(Mlt.lm.fit)
+
+# Inspect the multicollinearity calculating the variance inflation factor (VIF). Min. is 1; over 5-10 is too high
+Mlt.lm.fit1 <- lm(mpg~displacement+horsepower+year+origin, AutoNum)
+library(car)
+vif(Mlt.lm.fit1)
+
+AutoNum <- AutoNum[ ,-2]
+Mlt.lm.fit <- lm(mpg~+horsepower*.+year*.
+                 , AutoNum)
+summary(Mlt.lm.fit)
+
+Mlt.lm.fit1 <- lm(mpg~horsepower+year+origin, AutoNum)
+vif(Mlt.lm.fit1)
+
+par(mfrow = c(2,2))
+plot(Mlt.lm.fit)
+
+# Leverage statistics (always between 1/n and 1)
+par(mfrow = c(1,1))
+plot(hatvalues(Mlt.lm.fit))
+# identify the index of the observation with the largest leverage
+which.max(hatvalues(Mlt.lm.fit))
+which.max(rstandard(Mlt.lm.fit))
+
+
+# For loop to identify outliars.
+res <- c()
+  rstandList <- (rstandard(Mlt.lm.fit))
+  i = 1
+  for(r in rstandList) {
+    if (rstandList[[i]] <= -3 | rstandList[[i]] >= 3) {
+      print(paste("Observation nr.", names(rstandList[i]), "Index", i, "standardized residual", rstandList[[i]]))
+      res <- c(res,i)
+      i = i+1
+    } else {
+      i = i+1
+    }
+  }
+ 
+  AutoNum <- AutoNum[-res, ]
+  
+  Mlt.lm.fit <- lm(mpg~+horsepower*.+year*., AutoNum)
+  summary(Mlt.lm.fit)
+  
+  par(mfrow = c(2,2))
+  plot(Mlt.lm.fit)

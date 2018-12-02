@@ -1,0 +1,46 @@
+# 10
+library(ISLR)
+str(Weekly)
+
+#10d training and test sets
+library(dplyr)
+train.set <- Weekly %>%
+  filter(Year < 2008)
+test.set <- Weekly %>%
+  filter(Year >= 2008)
+
+# Logistic Regression
+glm.fit <- glm(Direction~Lag2, data = train.set, family = "binomial")
+glm.probs <- predict(glm.fit, test.set, type = "response")
+glm.pred <- rep("Down", 156)
+glm.pred[glm.probs >= .5] <- "Up"
+
+table(glm.pred,test.set$Direction)
+mean(glm.pred==test.set$Direction)
+
+#10e Repeat 10d with LDA
+library(MASS)
+lda.fit <- lda(Direction~Lag2, train.set)
+lda.pred <- predict(lda.fit, test.set)
+names(lda.pred)
+lda.pred
+
+table(lda.pred$class, test.set$Direction)
+mean(lda.pred$class==test.set$Direction)
+
+#10f Repeat 10d with QDA
+qda.fit <- qda(Direction~Lag2, train.set)
+qda.pred <- predict(qda.fit, test.set)
+
+table(qda.pred$class, test.set$Direction)
+mean(qda.pred$class==test.set$Direction)
+
+#10g Repeat 10d with KNN, K=1
+library(class)
+train.X <- as.matrix(train.set$Lag2)
+test.X <- as.matrix(test.set$Lag2)
+train.Direction <- train.set$Direction
+
+knn.pred <- knn(train.X, test.X, train.Direction, k=1)
+table(knn.pred, test.set$Direction)
+mean(knn.pred==test.set$Direction)

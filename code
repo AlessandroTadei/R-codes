@@ -1,0 +1,517 @@
+## NaiveBayes to separate Real CSA Victims from Simulators. Boys and Girls separate ## 
+
+
+library(haven)
+
+# upload datafile on laptop
+Malingering_FICSA_datafile <- read_sav("...")
+
+# Building the 2 subsets for only males and only females in Malingering study 
+library(dplyr)
+BoySubset_df <- Malingering_FICSA_datafile %>%
+  filter(Subset == 0) %>%
+  select(Abused_Simulators, T.1.29:F.24.289_6)
+
+BoySubset_df = as_factor(BoySubset_df)
+str(BoySubset_df)
+
+
+## BOYS with all FICSA and all Traps ##
+
+# Missing values count
+OnlySim <- BoySubset_df %>%
+  filter(BoySubset_df$Abused_Simulators == "Simulator")
+na.OnlySim <- colSums(is.na(OnlySim))
+Perc.na.OnlySim <- na.OnlySim / 105
+Perc.na.OnlySim <- round(Perc.na.OnlySim, 2)
+
+OnlyRealVic <- BoySubset_df %>%
+  filter(BoySubset_df$Abused_Simulators == "Real victim")
+na.OnlyRealVic <- colSums(is.na(OnlyRealVic))
+Perc.na.OnlyRealVic <- na.OnlyRealVic /136
+Perc.na.OnlyRealVic <- round(Perc.na.OnlyRealVic, 2)
+
+na_matrix <- matrix(data = c(Perc.na.OnlySim, Perc.na.OnlyRealVic), nrow = 2, byrow = T)
+rownames(na_matrix) <- c("Simulators", "Real Victims")
+
+
+diffNA <- na_matrix[2, ]- na_matrix[1, ] #indicates the percentage of random values to hide from the simulators
+na_matrix <- rbind (na_matrix, diffNA)
+
+na_matrix
+
+sum(is.na(OnlySim))
+sum(is.na(OnlyRealVic))
+
+#creating NA for correct % of data in the specified columns  
+set.seed(124)
+is.na(OnlySim[sample(1:nrow(OnlySim),0.04*nrow(OnlySim)),3])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.06*nrow(OnlySim)),4])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.07*nrow(OnlySim)),5])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.02*nrow(OnlySim)),6])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),7:13])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.18*nrow(OnlySim)),14])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.12*nrow(OnlySim)),16])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.14*nrow(OnlySim)),17:19])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.24*nrow(OnlySim)),20:21])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.20*nrow(OnlySim)),22])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.08*nrow(OnlySim)),23])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.21*nrow(OnlySim)),24:25])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.20*nrow(OnlySim)),26])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.21*nrow(OnlySim)),27])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.10*nrow(OnlySim)),28])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.17*nrow(OnlySim)),29])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.08*nrow(OnlySim)),30])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.11*nrow(OnlySim)),31])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.22*nrow(OnlySim)),32])<-TRUE
+
+sum(is.na(OnlySim))
+sum(is.na(OnlyRealVic))
+
+BoySubset_df <- rbind(OnlySim, OnlyRealVic)
+sum(is.na(BoySubset_df))
+
+
+# Separate class variable (labels) from predictors (attributes). Only questions that can be asked to everyone.
+xtot <- select(BoySubset_df, # here you put the list of predictors ) 
+y <- BoySubset_df$Abused_Simulators
+
+
+#Features selection
+source("ficsa_feature_selection_method.R")
+res = nb_feature_selection(y,xtot)
+res$feat_ind
+res$feat_name
+
+x <- select(BoySubset_df, #list of predictors after feature selection procedure) 
+
+
+library(caret)
+
+
+
+# R complained about having a space in "Real victim" so I replaced it with a _
+levels(y) <- c("Simulator","Real_victim")
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierBoys$finalModel$tables.
+tg <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierBoys = train(x,y,'nb',trControl = tc,tuneGrid = tg)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp <- NBclassifierBoys$pred
+
+# average accuracy
+acc <- mean(NBclassifierBoys$resample[,1])
+acc
+
+# The accuracy estimates of the different splits are found in NBclassifierBoys$resample
+# Code for plotting the ROC curve for the boy sample using the test predictions from the cross-validation, that is, the same predictions used for estimating the classification accuracy. The curve is now the mean curve over the different folds.
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+library(ROCR)
+ps <- list()
+lab <- list()
+k <- 1
+for (i in 1:4){
+	for (j in 1:5){
+		ind <- temp[,9]==paste("Fold", i, ".Rep", j,sep="")		
+		ps[[k]] <- temp[ind,3]
+		lab[[k]] <- temp[ind,2]
+		k <- k+1
+	}		
+}
+ROCR.xval <- list()
+ROCR.xval$predictions <- ps 
+ROCR.xval$labels <- lab
+
+# Plot the curve. 
+pred <- prediction(ROCR.xval$predictions, ROCR.xval$labels)
+perf <- performance(pred,"tpr","fpr")
+plot(perf,main = "ROC Curves for Boys",col="grey82",lty=3)
+plot(perf,lty=1,lwd=3,avg="vertical",spread.estimate="stddev",add=TRUE, col="black")
+
+auc <- performance(pred,"auc")
+AUC<-mean(unlist(auc@y.values))
+AUC <- round(AUC, 3)  # to have only 3 decimals
+
+#--------------------------------------------------------------------------------------
+
+
+# ## BOYS with all FICSA only ##
+
+x2tot <- select(BoySubset_df, 
+            # predictors) 
+
+
+# features selection
+res2 = nb_feature_selection(y,x2tot)
+res2$feat_ind
+res2$feat_name
+
+x2 <- select(BoySubset_df, #predictors after feature selection) 
+                 
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc2 <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierBoys$finalModel$tables.
+tg2 <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierBoys2 = train(x2,y,'nb',trControl = tc2,tuneGrid = tg2)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp2 <- NBclassifierBoys2$pred
+
+# The accuracy estimates of the different splits are found in NBclassifierBoys$resample
+
+
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+
+ps2 <- list()
+lab2 <- list()
+k2 <- 1
+for (i in 1:4){
+  for (j in 1:5){
+    ind2 <- temp2[,9]==paste("Fold", i, ".Rep", j,sep="")		
+    ps2[[k2]] <- temp2[ind2,3]
+    lab2[[k2]] <- temp2[ind2,2]
+    k2 <- k2+1
+  }		
+}
+ROCR.xval2 <- list()
+ROCR.xval2$predictions <- ps2 
+ROCR.xval2$labels <- lab2
+
+# Plot the curve. 
+pred2 <- prediction(ROCR.xval2$predictions, ROCR.xval2$labels)
+perf2 <- performance(pred2,"tpr","fpr")
+plot(perf2,lty=2,lwd=3,avg="vertical",add=TRUE, col="black")
+
+auc2 <- performance(pred2,"auc")
+AUC2 <- mean(unlist(auc2@y.values))
+AUC2 <- round(AUC2, 3)  # to have only 3 decimals
+#--------------------------------------------------------------------------------------
+
+# ## BOYS with all TRAPS only ##
+
+x3tot <- select(BoySubset_df, # predictors) 
+
+# feature selection
+res3 = nb_feature_selection(y,x3tot)
+res3$feat_ind
+res3$feat_name
+
+x3 <- select(BoySubset_df, #predictors)
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc3 <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierBoys$finalModel$tables.
+tg3 <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierBoys3 = train(x3,y,'nb',trControl = tc3,tuneGrid = tg3)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp3 <- NBclassifierBoys3$pred
+
+# The accuracy estimates of the different splits are found in NBclassifierBoys$resample
+
+
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+
+ps3 <- list()
+lab3 <- list()
+k3 <- 1
+for (i in 1:4){
+  for (j in 1:5){
+    ind3 <- temp3[,9]==paste("Fold", i, ".Rep", j,sep="")		
+    ps3[[k3]] <- temp3[ind3,3]
+    lab3[[k3]] <- temp3[ind3,2]
+    k3 <- k3+1
+  }		
+}
+ROCR.xval3 <- list()
+ROCR.xval3$predictions <- ps3 
+ROCR.xval3$labels <- lab3
+
+# Plot the curve. 
+pred3 <- prediction(ROCR.xval3$predictions, ROCR.xval3$labels)
+perf3 <- performance(pred3,"tpr","fpr")
+plot(perf3,lty=3,lwd=3,avg="vertical",add=TRUE, col="black")
+
+auc3 <- performance(pred3,"auc")
+AUC3 <- mean(unlist(auc3@y.values))
+AUC3 <- round(AUC3, 3)  # to have only 3 decimals
+
+
+legend(.4, .25, c("FICSA+Traps", "FICSA", "Traps"),bty="n",lty = 1:3, lwd = 2)
+legend(.7, .25, c("(AUC =","(AUC =","(AUC =",AUC,AUC2,AUC3), bty = "n", ncol=(2), x.intersp = .1, text.width = .08)
+legend(.865,.25, c(")",")",")"), bty = "n")
+
+#--------------------------------------------------------------------------------------
+
+
+
+## GIRLS
+
+# Building the 2 subsets for only females in Malingering study
+
+library(dplyr)
+GirlSubset_df <- Malingering_FICSA_datafile %>%
+  filter(Subset == 1) %>%
+  select(Abused_Simulators, G.T.1.29:T.37.287_10)
+
+GirlSubset_df = as_factor(GirlSubset_df)
+str(GirlSubset_df)
+
+
+## GIRLS with all FICSA and all Traps ##
+
+# Missing values count
+OnlySim <- GirlSubset_df %>%
+  filter(GirlSubset_df$Abused_Simulators == "Simulator")
+na.OnlySim <- colSums(is.na(OnlySim))
+Perc.na.OnlySim <- na.OnlySim / 149
+Perc.na.OnlySim <- round(Perc.na.OnlySim, 2)
+
+OnlyRealVic <- GirlSubset_df %>%
+  filter(GirlSubset_df$Abused_Simulators == "Real victim")
+na.OnlyRealVic <- colSums(is.na(OnlyRealVic))
+Perc.na.OnlyRealVic <- na.OnlyRealVic /161
+Perc.na.OnlyRealVic <- round(Perc.na.OnlyRealVic, 2)
+
+na_matrix <- matrix(data = c(Perc.na.OnlySim, Perc.na.OnlyRealVic), nrow = 2, byrow = T)
+rownames(na_matrix) <- c("Simulators", "Real Victims")
+
+
+diffNA <- na_matrix[2, ]- na_matrix[1, ] #indicates the percentage of random values to hide from the simulators
+na_matrix <- rbind (na_matrix, diffNA)
+
+na_matrix
+
+sum(is.na(OnlySim))
+sum(is.na(OnlyRealVic))
+
+#creating NA for correct % of data in the specified columns  
+set.seed(125)
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),2])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),4:5])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.02*nrow(OnlySim)),6])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),8])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),10:12])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.90*nrow(OnlySim)),13:14])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),15])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.53*nrow(OnlySim)),17])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),18])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.02*nrow(OnlySim)),20])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.01*nrow(OnlySim)),21])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.26*nrow(OnlySim)),22])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.76*nrow(OnlySim)),23])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.78*nrow(OnlySim)),24])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.80*nrow(OnlySim)),25:26])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.35*nrow(OnlySim)),27])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.36*nrow(OnlySim)),28])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.38*nrow(OnlySim)),29])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.42*nrow(OnlySim)),30])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.16*nrow(OnlySim)),31:32])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.70*nrow(OnlySim)),33])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.11*nrow(OnlySim)),34])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.12*nrow(OnlySim)),35:37])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.11*nrow(OnlySim)),38])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.14*nrow(OnlySim)),39:40])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.15*nrow(OnlySim)),41])<-TRUE
+is.na(OnlySim[sample(1:nrow(OnlySim),0.4*nrow(OnlySim)),42])<-TRUE
+
+sum(is.na(OnlySim))
+sum(is.na(OnlyRealVic))
+
+GirlSubset_df <- rbind(OnlySim, OnlyRealVic)
+sum(is.na(GirlSubset_df))
+
+
+# Separate class variable (labels) from predictors (attributes)
+xtot <- select(GirlSubset_df,# all predictors FICSA + Traps) 
+y <- GirlSubset_df$Abused_Simulators
+
+
+#Features selection
+source("ficsa_feature_selection_method.R")
+res = nb_feature_selection(y,xtot)
+res$feat_ind
+res$feat_name
+
+x <- select(GirlSubset_df, # predictors after feature selection) 
+
+
+library(caret)
+
+
+
+# R complained about having a space in "Real victim" so I replaced it with a _
+levels(y) <- c("Simulator","Real_victim")
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierGirls$finalModel$tables.
+tg <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierGirls = train(x,y,'nb',trControl = tc,tuneGrid = tg)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp <- NBclassifierGirls$pred
+
+# average accuracy
+acc <- mean(NBclassifierGirls$resample[,1])
+acc
+
+# The accuracy estimates of the different splits are found in NBclassifierGirls$resample
+# Code for plotting the ROC curve for the Girl sample using the test predictions from the cross-validation, that is, the same predictions used for estimating the classification accuracy. The curve is now the mean curve over the different folds.
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+library(ROCR)
+ps <- list()
+lab <- list()
+k <- 1
+for (i in 1:4){
+	for (j in 1:5){
+		ind <- temp[,9]==paste("Fold", i, ".Rep", j,sep="")		
+		ps[[k]] <- temp[ind,3]
+		lab[[k]] <- temp[ind,2]
+		k <- k+1
+	}		
+}
+ROCR.xval <- list()
+ROCR.xval$predictions <- ps 
+ROCR.xval$labels <- lab
+
+# Plot the curve. 
+pred <- prediction(ROCR.xval$predictions, ROCR.xval$labels)
+perf <- performance(pred,"tpr","fpr")
+plot(perf,main = "ROC Curves for Girls", col="grey82",lty=3)
+plot(perf,lty=1,lwd=3,avg="vertical",spread.estimate="stddev",add=TRUE, col="black")
+
+auc <- performance(pred,"auc")
+AUC<-mean(unlist(auc@y.values))
+AUC <- round(AUC, 3)  # to have only 3 decimals
+
+#--------------------------------------------------------------------------------------
+
+
+# ## GirlS with all FICSA only ##
+
+x2tot <- select(GirlSubset_df, # predictors FICSA) 
+
+
+# features selection
+res2 = nb_feature_selection(y,x2tot)
+res2$feat_ind
+res2$feat_name
+
+x2 <- select(GirlSubset_df, #predictors after feature selection) 
+                 
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc2 <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierGirls$finalModel$tables.
+tg2 <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierGirls2 = train(x2,y,'nb',trControl = tc2,tuneGrid = tg2)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp2 <- NBclassifierGirls2$pred
+
+# The accuracy estimates of the different splits are found in NBclassifierGirls$resample
+
+
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+
+ps2 <- list()
+lab2 <- list()
+k2 <- 1
+for (i in 1:4){
+  for (j in 1:5){
+    ind2 <- temp2[,9]==paste("Fold", i, ".Rep", j,sep="")		
+    ps2[[k2]] <- temp2[ind2,3]
+    lab2[[k2]] <- temp2[ind2,2]
+    k2 <- k2+1
+  }		
+}
+ROCR.xval2 <- list()
+ROCR.xval2$predictions <- ps2 
+ROCR.xval2$labels <- lab2
+
+# Plot the curve. 
+pred2 <- prediction(ROCR.xval2$predictions, ROCR.xval2$labels)
+perf2 <- performance(pred2,"tpr","fpr")
+plot(perf2,lty=2,lwd=3,avg="vertical",add=TRUE, col="black")
+
+auc2 <- performance(pred2,"auc")
+AUC2 <- mean(unlist(auc2@y.values))
+AUC2 <- round(AUC2, 3)  # to have only 3 decimals
+#--------------------------------------------------------------------------------------
+
+# ## GirlS with all TRAPS only ##
+
+x3tot <- select(GirlSubset_df, # predicotrs traps) 
+
+# feature selection
+res3 = nb_feature_selection(y,x3tot)
+res3$feat_ind
+res3$feat_name
+
+x3 <- select(GirlSubset_df, # predictors after feat.sel)
+
+# To get larger test sets, I changed the number of folds to 4 and did repeated CV. I save the predicted class probabilities which will be used to plot the ROC curve.
+tc3 <- trainControl(method = 'repeatedcv',number = 4,repeats = 5,classProbs = TRUE,savePredictions = "all")
+
+# I set fL to 0.1 to avoid zero probabilities in the feature probability table. To check: if you set fL = 0, you get zeros in NBclassifierGirls$finalModel$tables.
+tg3 <- data.frame(fL = 0.1, usekernel = FALSE,adjust = 0)
+
+NBclassifierGirls3 = train(x3,y,'nb',trControl = tc3,tuneGrid = tg3)
+
+# Here are the results from the cross-validation. The last column indicates fold and iteration, that is, instances of eg. Fold1.Rep1 belong to the same train/test split. 
+temp3 <- NBclassifierGirls3$pred
+
+# The accuracy estimates of the different splits are found in NBclassifierGirls$resample
+
+
+# Collect the results of the different splits and save them in the format described for ROCR.xval in http://ftp.auckland.ac.nz/software/CRAN/doc/packages/ROCR.pdf
+#--------------------------------------------------------------------------------------
+
+ps3 <- list()
+lab3 <- list()
+k3 <- 1
+for (i in 1:4){
+  for (j in 1:5){
+    ind3 <- temp3[,9]==paste("Fold", i, ".Rep", j,sep="")		
+    ps3[[k3]] <- temp3[ind3,3]
+    lab3[[k3]] <- temp3[ind3,2]
+    k3 <- k3+1
+  }		
+}
+ROCR.xval3 <- list()
+ROCR.xval3$predictions <- ps3 
+ROCR.xval3$labels <- lab3
+
+# Plot the curve. 
+pred3 <- prediction(ROCR.xval3$predictions, ROCR.xval3$labels)
+perf3 <- performance(pred3,"tpr","fpr")
+plot(perf3,lty=3,lwd=3,avg="vertical",add=TRUE, col="black")
+
+auc3 <- performance(pred3,"auc")
+AUC3 <- mean(unlist(auc3@y.values))
+AUC3 <- round(AUC3, 3)  # to have only 3 decimals
+
+legend(.4, .25, c("FICSA+Traps", "FICSA", "Traps"),bty="n",lty = 1:3, lwd = 2)
+legend(.7, .25, c("(AUC =","(AUC =","(AUC =",AUC,AUC2,AUC3), bty = "n", ncol=(2), x.intersp = .1, text.width = .08)
+legend(.865,.25, c(")",")",")"), bty = "n")
+#--------------------------------------------------------------------------------------

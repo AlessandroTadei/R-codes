@@ -99,3 +99,62 @@ res <- c()
   
   par(mfrow = c(2,2))
   plot(Mlt.lm.fit)
+
+# ======================================================================================= #
+
+#11a 
+Auto <- Auto %>%
+  mutate(mpg01 = if_else(mpg > median(mpg), 1, 0))
+
+#11b
+pairs(Auto)
+
+#11c
+train <- sample(1:392, 294, replace = F)
+train.set <- Auto[train,]
+test.set <- Auto[-train,]
+
+#11d
+library(MASS)
+lda.fit <- lda(mpg01~horsepower+weight+acceleration, train.set)
+lda.pred <- predict(lda.fit,test.set)
+table(lda.pred$class,test.set$mpg01)
+mean(lda.pred$class!=test.set$mpg01)
+
+#11e
+qda.fit <- qda(mpg01~horsepower+weight+acceleration, train.set)
+qda.pred <- predict(qda.fit,test.set)
+table(qda.pred$class,test.set$mpg01)
+mean(qda.pred$class!=test.set$mpg01)
+
+#11f
+glm.fit <- glm(mpg01~horsepower+weight+acceleration, train.set, family = binomial)
+glm.probs <- predict(glm.fit,test.set, type = "response")
+glm.pred <- rep(0,98)
+glm.pred[glm.probs >.5] <- 1
+table(glm.pred,test.set$mpg01)
+mean(glm.pred!=test.set$mpg01)
+
+#11g
+train.set.stnd <- scale(train.set[ ,4:6])
+test.set.stnd <- scale(test.set[ ,4:6])
+
+train.set.stnd <- cbind(train.set.stnd, train.set$mpg01)
+test.set.stnd <- cbind(test.set.stnd, test.set$mpg01)
+
+train.X <- as.matrix(train.set.stnd[,-4])
+test.X <- as.matrix(test.set.stnd[,-4])
+train.mpg01 <- train.set.stnd[,4]
+
+knn.pred <- knn(train.X,test.X,train.mpg01, k=24)
+table(knn.pred,test.set$mpg01)
+mean(knn.pred!=test.set$mpg01)
+
+# Identify which k has lower test error rate
+err.vec <- c()
+for (i in 1:98) {
+  knn.pred <- knn(train.X,test.X,train.mpg01, k=i)
+  err.vec <- c(err.vec, print(mean(knn.pred!=test.set$mpg01)))
+}
+  
+which.min(err.vec)

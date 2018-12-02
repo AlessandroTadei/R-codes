@@ -1,0 +1,247 @@
+# 17-11-2018  Alessandro Tadei
+# Title: Explore the rents in Stockholm vs Gothenburg
+
+# ---------------------------------------------------------------------------------------- #
+
+# Load package for Webpage scraping
+library(rvest)
+
+# for loop to scrap all the needed information
+price <- c()
+rooms <- c()
+meters <- c()
+start <- c()
+end <- c()
+location <- c()
+for (i in 1:10) {
+  # Specify URL to scrap for available houses in Stockholm
+  url.St <- paste0('https://en.qasa.se/find-home/sweden?page=', i, '&lat=59.32932349999999&lng=18.068580800000063&alias=Stockholm')
+  # Read the HTML code from the webpage
+  webpage.St <- read_html(url.St)
+  # Use CSS selectors to scrap the info
+  prices_html <- html_nodes(webpage.St,'.match-info-container:nth-child(1) .not-matched')
+  rooms_html <- html_nodes(webpage.St,'.Link span:nth-child(4)')
+  meters_html <- html_nodes(webpage.St,'.home-value span:nth-child(4)')
+  start_html <- html_nodes(webpage.St,'.match-info-container:nth-child(3) .home-value :nth-child(1)')
+  end_html <- html_nodes(webpage.St,'.match-info-container:nth-child(4) .not-matched')
+  location_html <- html_nodes(webpage.St,'.location')
+  
+  # Convert the info to text
+  price_text <- html_text(prices_html)
+  rooms_text <- html_text(rooms_html)
+  meters_text <- html_text(meters_html)
+  start_text <- html_text(start_html)
+  end_text <- html_text(end_html)
+  location_text <- html_text(location_html)
+  
+  # Put all the info in their vectors
+  price <- c(price_text,price)
+  rooms <- c(rooms_text,rooms)
+  meters <- c(meters_text,meters)
+  start <- c(start_text,start)
+  end <- c(end_text,end)
+  location <- c(location_text,location)
+}
+
+# Dataset
+Stockholm <- cbind.data.frame(location, rooms, meters, price, start, end)
+
+# Clean and labelling the dataset (new columns to compare the results)
+Stockholm$price2 <- gsub(".*?([0-9]+\\s[0-9]+).*", "\\1", Stockholm$price)
+Stockholm$price2 <- as.numeric(gsub("\\s","", Stockholm$price2))
+
+Stockholm$rooms2 <- as.numeric(Stockholm$rooms)
+
+Stockholm$meter2 <- as.numeric(Stockholm$meters)
+
+Stockholm$start2 <- as.Date(sub("Immediate", Sys.Date(), Stockholm$start))
+Stockholm$start2 <- format(as.Date(Stockholm$start2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm$end2 <- sub("Until further","2099-12-31", Stockholm$end)
+Stockholm$end2 <- as.Date(sub("Move out date","", Stockholm$end2))
+Stockholm$end2 <- format(as.Date(Stockholm$end2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm$location2 <- sub("\\n.*","", Stockholm$location)
+Stockholm$location2 <- gsub(",","", Stockholm$location2)
+
+
+# Remove not clean variables
+Stockholm <- Stockholm[7:12]
+
+# Rename the columns
+colnames(Stockholm) <- c("Price", "Rooms", "Sq_Meters", "Start_Rent", "End_Rent", "Location_Rent")
+
+
+
+
+# Same from page 11 to 20
+
+# for loop to scrap all the needed information
+price <- c()
+rooms <- c()
+meters <- c()
+start <- c()
+end <- c()
+location <- c()
+for (i in 11:20) {
+  # Specify URL to scrap for available houses in Stockholm
+  url.St <- paste0('https://en.qasa.se/find-home/sweden?page=', i, '&lat=59.32932349999999&lng=18.068580800000063&alias=Stockholm')
+  # Read the HTML code from the webpage
+  webpage.St <- read_html(url.St)
+  # Use CSS selectors to scrap the info
+  prices_html <- html_nodes(webpage.St,'.match-info-container:nth-child(1) .not-matched')
+  rooms_html <- html_nodes(webpage.St,'.Link span:nth-child(4)')
+  meters_html <- html_nodes(webpage.St,'.home-value span:nth-child(4)')
+  start_html <- html_nodes(webpage.St,'.match-info-container:nth-child(3) .home-value :nth-child(1)')
+  end_html <- html_nodes(webpage.St,'.match-info-container:nth-child(4) .not-matched')
+  location_html <- html_nodes(webpage.St,'.location')
+  
+  # Convert the info to text
+  price_text <- html_text(prices_html)
+  rooms_text <- html_text(rooms_html)
+  meters_text <- html_text(meters_html)
+  start_text <- html_text(start_html)
+  end_text <- html_text(end_html)
+  location_text <- html_text(location_html)
+  
+  # Put all the info in their vectors
+  price <- c(price_text,price)
+  rooms <- c(rooms_text,rooms)
+  meters <- c(meters_text,meters)
+  start <- c(start_text,start)
+  end <- c(end_text,end)
+  location <- c(location_text,location)
+}
+
+# Dataset
+Stockholm2 <- cbind.data.frame(location, rooms, meters, price, start, end)
+
+# Clean and labelling the dataset (new columns to compare the results)
+Stockholm2$price2 <- gsub(".*?([0-9]+\\s[0-9]+).*", "\\1", Stockholm2$price)
+Stockholm2$price2 <- as.numeric(gsub("\\s","", Stockholm2$price2))
+
+Stockholm2$rooms2 <- as.numeric(Stockholm2$rooms)
+
+Stockholm2$meter2 <- as.numeric(Stockholm2$meters)
+
+Stockholm2$start2 <- as.Date(sub("Immediate", Sys.Date(), Stockholm2$start))
+Stockholm2$start2 <- format(as.Date(Stockholm2$start2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm2$end2 <- sub("Until further","2099-12-31", Stockholm2$end)
+Stockholm2$end2 <- as.Date(sub("Move out date","", Stockholm2$end2))
+Stockholm2$end2 <- format(as.Date(Stockholm2$end2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm2$location2 <- sub("\\n.*","", Stockholm2$location)
+Stockholm2$location2 <- gsub(",","", Stockholm2$location2)
+
+
+# Remove not clean variables
+Stockholm2 <- Stockholm2[7:12]
+
+# Rename the columns
+colnames(Stockholm2) <- c("Price", "Rooms", "Sq_Meters", "Start_Rent", "End_Rent", "Location_Rent")
+
+
+
+# # Same from page 21 to 30
+
+# for loop to scrap all the needed information
+price <- c()
+rooms <- c()
+meters <- c()
+start <- c()
+end <- c()
+location <- c()
+for (i in 21:30) {
+  # Specify URL to scrap for available houses in Stockholm
+  url.St <- paste0('https://en.qasa.se/find-home/sweden?page=', i, '&lat=59.32932349999999&lng=18.068580800000063&alias=Stockholm')
+  # Read the HTML code from the webpage
+  webpage.St <- read_html(url.St)
+  # Use CSS selectors to scrap the info
+  prices_html <- html_nodes(webpage.St,'.match-info-container:nth-child(1) .not-matched')
+  rooms_html <- html_nodes(webpage.St,'.Link span:nth-child(4)')
+  meters_html <- html_nodes(webpage.St,'.home-value span:nth-child(4)')
+  start_html <- html_nodes(webpage.St,'.match-info-container:nth-child(3) .home-value :nth-child(1)')
+  end_html <- html_nodes(webpage.St,'.match-info-container:nth-child(4) .not-matched')
+  location_html <- html_nodes(webpage.St,'.location')
+  
+  # Convert the info to text
+  price_text <- html_text(prices_html)
+  rooms_text <- html_text(rooms_html)
+  meters_text <- html_text(meters_html)
+  start_text <- html_text(start_html)
+  end_text <- html_text(end_html)
+  location_text <- html_text(location_html)
+  
+  # Put all the info in their vectors
+  price <- c(price_text,price)
+  rooms <- c(rooms_text,rooms)
+  meters <- c(meters_text,meters)
+  start <- c(start_text,start)
+  end <- c(end_text,end)
+  location <- c(location_text,location)
+}
+
+# Dataset
+Stockholm3 <- cbind.data.frame(location, rooms, meters, price, start, end)
+
+# Clean and labelling the dataset (new columns to compare the results)
+Stockholm3$price2 <- gsub(".*?([0-9]+\\s[0-9]+).*", "\\1", Stockholm3$price)
+Stockholm3$price2 <- as.numeric(gsub("\\s","", Stockholm3$price2))
+
+Stockholm3$rooms2 <- as.numeric(Stockholm3$rooms)
+
+Stockholm3$meter2 <- as.numeric(Stockholm3$meters)
+
+Stockholm3$start2 <- as.Date(sub("Immediate", Sys.Date(), Stockholm3$start))
+Stockholm3$start2 <- format(as.Date(Stockholm3$start2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm3$end2 <- sub("Until further","2099-12-31", Stockholm3$end)
+Stockholm3$end2 <- as.Date(sub("Move out date","", Stockholm3$end2))
+Stockholm3$end2 <- format(as.Date(Stockholm3$end2, format = "%Y-%m-%d"), "%m-%d-%Y")
+
+Stockholm3$location2 <- sub("\\n.*","", Stockholm3$location)
+Stockholm3$location2 <- gsub(",","", Stockholm3$location2)
+
+# Remove not clean variables
+Stockholm3 <- Stockholm3[7:12]
+
+# Rename the columns
+colnames(Stockholm3) <- c("Price", "Rooms", "Sq_Meters", "Start_Rent", "End_Rent", "Location_Rent")
+
+
+
+# Join all the datasets
+Stockholm <- rbind.data.frame(Stockholm, Stockholm2, Stockholm3)
+
+# Add column city
+City <- rep("Stockholm", nrow(Stockholm))
+Stockholm <- cbind(Stockholm, City)
+
+# Look for NA
+sum(is.na(Stockholm))
+
+# Check the structure of the final dataset
+str(Stockholm)
+
+# Prepare the dataset to be exported to PostgreSQL
+write.csv(Stockholm, ".../Stockholm.csv")
+
+# Code to create a similar table in PostgreSQL
+
+# CREATE TABLE Stockholm
+# (
+#   id serial NOT NULL,
+#   Price integer,
+#   Rooms integer,
+#   Sq_Meters integer,
+#   Start_Rent date,
+#   End_Rent date,
+#   Location_Rent text,
+#   City text
+# )
+
+# Delete the ID column from csv file and, in pgAdmin, select Encoding WIN1251
+
+
+REPEAT THE SAME, CHANGING THE URL FOR THE CHOSEN CITY

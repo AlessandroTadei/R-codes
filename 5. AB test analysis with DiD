@@ -1,0 +1,642 @@
+# title: "A/B testing"
+# author: "Alessandro Tadei"
+# date: "December 19, 2018"
+
+# setup the connection to BigQuery
+library(bigrquery)
+devtools::install_github("rstats-db/bigrquery")
+project <- "name of the project"
+
+# SQL query to randomly select a subsample of A and B (different proportions, almost equal final size of activities per group)
+sql <- "SELECT o.playerid, o.abtest_group, o.assignment_date, o.install_date, o.conversion_date, t.activity_date, t.purchases, t.gameends
+FROM abtest.assignment AS o
+LEFT JOIN abtest.activity AS t
+ON o.playerid = t.playerid
+WHERE (0.018 >= RAND(1) AND o.abtest_group = 'A') OR (0.07 >= RAND(2) AND o.abtest_group = 'B')"
+
+subsample <- query_exec(sql, project = project, useLegacySql = FALSE, max_pages = Inf)
+str(subsample)
+table(subsample$o_abtest_group)
+
+# Transform variables
+str(subsample)
+subsample$o_assignment_date <- as.POSIXct(subsample$o_assignment_date, format = '%Y-%m-%d')
+subsample$o_install_date <- as.POSIXct(subsample$o_install_date, format = '%Y-%m-%d')
+subsample$o_conversion_date <- as.POSIXct(subsample$o_conversion_date, format = '%Y-%m-%d')
+subsample$t_activity_date <- as.POSIXct(subsample$t_activity_date, format = '%Y-%m-%d')
+
+# for loop to check for unexpected NAs
+nasN <- c()
+nas <-c()
+for (i in 1:ncol(subsample)) {
+  x <- sum(is.na(subsample[ ,i]))
+  nasN <- c(x,nas)
+  if (x!=0) {
+    nas <- c(print(paste(x, colnames(subsample[i]))), nas)
+  } else {
+    next
+  }
+}
+
+# ===============================================================================================#
+# Relation between install_date and assignment_date
+library(dplyr)
+q1 <- subsample %>%
+  select(o_install_date, o_assignment_date) %>%
+  distinct %>%
+  arrange(desc(o_assignment_date))
+
+q1[1:25,]
+
+# check if activity table is only for the testing period
+sql <- "SELECT activity_date
+FROM abtest.activity
+GROUP BY activity_date
+ORDER BY activity_date
+LIMIT 25"
+
+first_activity_date <- query_exec(sql, project = project, useLegacySql = FALSE)
+
+# ===============================================================================================#
+# Is the amount of purchases skewed?
+library(ggplot2)
+plot_purchases_all <- ggplot(subsample, aes(x = t_purchases))+
+  geom_histogram()+
+  labs(x="Purchases", title = "Purch/day All players")
+
+plot_purchases_buyers <- ggplot(subsample, aes(x = log(t_purchases)))+
+  geom_histogram()+
+  labs(x="Log Purchases", title = "Purch/day Buyers")
+
+library(gridExtra)
+grid.arrange(plot_purchases_all, plot_purchases_buyers, ncol=2, nrow = 1)
+
+# ====================================================================================== #
+# Prepare the dataset for the Difeerence in Difference (DID) analysis
+library(dplyr)
+df1 <- subsample %>%
+  mutate(buy = as.factor(ifelse(t_purchases == 0, 0,1)),
+         exp_days = as.numeric((t_activity_date-o_install_date)/86400),
+         exp = as.factor(ifelse(exp_days < median(exp_days),0,1)),
+         time = as.factor(ifelse(t_gameends < median(t_gameends),0,1)),
+         bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+# to be considered an expert player you need to have had the game for 141 days at least
+median(df1$exp_days)
+# to be considered an hardcore player you need to play at least 10 rounds in a gaming day.
+median(df1$t_gameends)
+
+# ====================================================================================== #
+# # Tests difference in difference (DID)
+# a. Does the experimental condition affect the gamerounds per player per day?
+
+df1rounds <- df1 %>%
+  select(o_abtest_group,t_activity_date,t_gameends, bf_af) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_gameends = mean(t_gameends), n_activities = n()) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(n_activities ~ bf_af*o_abtest_group, data=df1rounds))
+
+activities_plot1 <- ggplot(data= df1rounds, aes(x=t_activity_date, y=n_activities, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1rounds, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1rounds, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1rounds$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "N players", title = "Number of players per day in the subsample", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+library(gmodels)
+n_players <- c(ci(df1rounds$n_activities[df1rounds$o_abtest_group=="A" & df1rounds$bf_af == 0], 0.95),
+               ci(df1rounds$n_activities[df1rounds$o_abtest_group=="A" & df1rounds$bf_af == 1], 0.95),
+               ci(df1rounds$n_activities[df1rounds$o_abtest_group=="B" & df1rounds$bf_af == 0], 0.95),
+               ci(df1rounds$n_activities[df1rounds$o_abtest_group=="B" & df1rounds$bf_af == 1], 0.95))
+
+n_players <- unlist(n_players)
+n_players <- matrix(n_players, byrow = T, ncol = 4)
+colnames(n_players) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+n_players <- cbind(Group,bf_af,n_players)
+n_players <- as.data.frame(n_players)
+n_players$Mean <- as.numeric(as.character(n_players$Mean))
+n_players$CI_lower <- as.numeric(as.character(n_players$CI_lower))
+n_players$CI_upper <- as.numeric(as.character(n_players$CI_upper))
+
+activities_plot2 <- qplot(x    = bf_af , y = Mean, data = n_players, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg n players", title = "Avg number of players in the subsample", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(activities_plot2, activities_plot1, ncol=1, nrow = 2)
+
+# b. Does the test increase the proportion of players that make at least one purchase? 
+# All the activity days
+library(dplyr)
+df1a <- df1 %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases[t_purchases!=0])) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(as.numeric(as.character(buy)) ~ bf_af*o_abtest_group, data=df1))
+
+buy_plot1 <- ggplot(data= df1a, aes(x=t_activity_date, y=avg_buy, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Proportion of buyers", title = "Proportion of buyers per day", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_buy <- c(ci(as.numeric(as.character(df1$buy[df1$o_abtest_group=="A" & df1$bf_af == 0]), 0.95)),
+  ci(as.numeric(as.character(df1$buy[df1$o_abtest_group=="A" & df1$bf_af == 1]), 0.95)),
+  ci(as.numeric(as.character(df1$buy[df1$o_abtest_group=="B" & df1$bf_af == 0]), 0.95)),
+  ci(as.numeric(as.character(df1$buy[df1$o_abtest_group=="B" & df1$bf_af == 1]), 0.95)))
+
+means_buy <- unlist(means_buy)
+means_buy <- matrix(means_buy, byrow = T, ncol = 4)
+colnames(means_buy) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_buy <- cbind(Group,bf_af,means_buy)
+means_buy <- as.data.frame(means_buy)
+means_buy$Mean <- as.numeric(as.character(means_buy$Mean))
+means_buy$CI_lower <- as.numeric(as.character(means_buy$CI_lower))
+means_buy$CI_upper <- as.numeric(as.character(means_buy$CI_upper))
+
+buy_plot2 <- qplot(x    = bf_af , y = Mean, data = means_buy, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg daily proportions of buyers", title = "Buyers before / after test", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot2, buy_plot1, ncol=1, nrow = 2)
+
+# ============================================================================================== #
+# c1. Effect of test on Expert players (>= 141 days from installation)
+df1exp1 <- df1 %>%
+  filter(exp == 1)
+
+summary(lm(as.numeric(as.character(buy)) ~ bf_af*o_abtest_group, data=df1exp1))
+
+df1aexp1 <- df1exp1 %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases[t_purchases!=0])) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+buy_plot3 <- ggplot(data= df1aexp1, aes(x=t_activity_date, y=avg_buy, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1aexp1, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1aexp1, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1aexp1$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Proportion of buyers", title = "Proportion of buyers per day - Expert players", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+means_buy <- c(ci(as.numeric(as.character(df1exp1$buy[df1exp1$o_abtest_group=="A" & df1exp1$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1exp1$buy[df1exp1$o_abtest_group=="A" & df1exp1$bf_af == 1]), 0.95)),
+               ci(as.numeric(as.character(df1exp1$buy[df1exp1$o_abtest_group=="B" & df1exp1$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1exp1$buy[df1exp1$o_abtest_group=="B" & df1exp1$bf_af == 1]), 0.95)))
+
+means_buy <- unlist(means_buy)
+means_buy <- matrix(means_buy, byrow = T, ncol = 4)
+colnames(means_buy) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_buy <- cbind(Group,bf_af,means_buy)
+means_buy <- as.data.frame(means_buy)
+means_buy$Mean <- as.numeric(as.character(means_buy$Mean))
+means_buy$CI_lower <- as.numeric(as.character(means_buy$CI_lower))
+means_buy$CI_upper <- as.numeric(as.character(means_buy$CI_upper))
+
+buy_plot4 <- qplot(x    = bf_af , y = Mean, data = means_buy, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg daily proportions of buyers", title = "Buyers before / after test - Expert players", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot4, buy_plot3, ncol=1, nrow = 2)
+
+# ============================================================================================== #
+# c2. Effect of test on New players (< 141 days from installation)
+df1exp0 <- df1 %>%
+  filter(exp == 0)
+
+summary(lm(as.numeric(as.character(buy)) ~ bf_af*o_abtest_group, data=df1exp0))
+
+df1aexp0 <- df1exp0 %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases[t_purchases!=0])) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+buy_plot5 <- ggplot(data= df1aexp0, aes(x=t_activity_date, y=avg_buy, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1aexp0, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1aexp0, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1aexp0$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Proportion of buyers", title = "Proportion of buyers per day - New players", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+means_buy <- c(ci(as.numeric(as.character(df1exp0$buy[df1exp0$o_abtest_group=="A" & df1exp0$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1exp0$buy[df1exp0$o_abtest_group=="A" & df1exp0$bf_af == 1]), 0.95)),
+               ci(as.numeric(as.character(df1exp0$buy[df1exp0$o_abtest_group=="B" & df1exp0$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1exp0$buy[df1exp0$o_abtest_group=="B" & df1exp0$bf_af == 1]), 0.95)))
+
+means_buy <- unlist(means_buy)
+means_buy <- matrix(means_buy, byrow = T, ncol = 4)
+colnames(means_buy) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_buy <- cbind(Group,bf_af,means_buy)
+means_buy <- as.data.frame(means_buy)
+means_buy$Mean <- as.numeric(as.character(means_buy$Mean))
+means_buy$CI_lower <- as.numeric(as.character(means_buy$CI_lower))
+means_buy$CI_upper <- as.numeric(as.character(means_buy$CI_upper))
+
+buy_plot6 <- qplot(x    = bf_af , y = Mean, data = means_buy, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg daily proportions of buyers", title = "Buyers before / after test - New players", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot6, buy_plot5, ncol=1, nrow = 2)
+
+# ============================================================================================== #
+# d1.Effect of test on Hardcore players (>= 10 rounds per gaming day)
+df1hc1 <- df1 %>%
+  filter(time == 1)
+
+summary(lm(as.numeric(as.character(buy)) ~ bf_af*o_abtest_group, data=df1hc1))
+
+df1ahc1 <- df1hc1 %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases[t_purchases!=0])) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+buy_plot7 <- ggplot(data= df1ahc1, aes(x=t_activity_date, y=avg_buy, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1ahc1, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1ahc1, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1ahc1$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Proportion of buyers", title = "Proportion of buyers per day - Hardcore players", color = "Group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+means_buy <- c(ci(as.numeric(as.character(df1hc1$buy[df1hc1$o_abtest_group=="A" & df1hc1$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1hc1$buy[df1hc1$o_abtest_group=="A" & df1hc1$bf_af == 1]), 0.95)),
+               ci(as.numeric(as.character(df1hc1$buy[df1hc1$o_abtest_group=="B" & df1hc1$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1hc1$buy[df1hc1$o_abtest_group=="B" & df1hc1$bf_af == 1]), 0.95)))
+
+means_buy <- unlist(means_buy)
+means_buy <- matrix(means_buy, byrow = T, ncol = 4)
+colnames(means_buy) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_buy <- cbind(Group,bf_af,means_buy)
+means_buy <- as.data.frame(means_buy)
+means_buy$Mean <- as.numeric(as.character(means_buy$Mean))
+means_buy$CI_lower <- as.numeric(as.character(means_buy$CI_lower))
+means_buy$CI_upper <- as.numeric(as.character(means_buy$CI_upper))
+
+buy_plot8 <- qplot(x    = bf_af , y = Mean, data = means_buy, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg daily proportions of buyers", title = "Buyers before / after test - Hardcore players", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot8, buy_plot7, ncol=1, nrow = 2)
+
+# ============================================================================================== #
+# d2. Effect of test on Casual players (< 10 rounds per gaming day)
+df1hc0 <- df1 %>%
+  filter(time == 0)
+
+summary(lm(as.numeric(as.character(buy)) ~ bf_af*o_abtest_group, data=df1hc0))
+
+df1ahc0 <- df1hc0 %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases[t_purchases!=0])) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+buy_plot9 <- ggplot(data= df1ahc0, aes(x=t_activity_date, y=avg_buy, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1ahc0, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1ahc0, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1ahc0$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Proportion of buyers", title = "Proportion of buyers per day - Casual players", color = "Group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+means_buy <- c(ci(as.numeric(as.character(df1hc0$buy[df1hc0$o_abtest_group=="A" & df1hc0$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1hc0$buy[df1hc0$o_abtest_group=="A" & df1hc0$bf_af == 1]), 0.95)),
+               ci(as.numeric(as.character(df1hc0$buy[df1hc0$o_abtest_group=="B" & df1hc0$bf_af == 0]), 0.95)),
+               ci(as.numeric(as.character(df1hc0$buy[df1hc0$o_abtest_group=="B" & df1hc0$bf_af == 1]), 0.95)))
+
+means_buy <- unlist(means_buy)
+means_buy <- matrix(means_buy, byrow = T, ncol = 4)
+colnames(means_buy) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_buy <- cbind(Group,bf_af,means_buy)
+means_buy <- as.data.frame(means_buy)
+means_buy$Mean <- as.numeric(as.character(means_buy$Mean))
+means_buy$CI_lower <- as.numeric(as.character(means_buy$CI_lower))
+means_buy$CI_upper <- as.numeric(as.character(means_buy$CI_upper))
+
+buy_plot10 <- qplot(x    = bf_af , y = Mean, data = means_buy, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg daily proportions of buyers", title = "Buyers before / after test - Casual players", color="Group") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot10, buy_plot9, ncol=1, nrow = 2)
+
+# ============================================================================================ #
+# ============================================================================================ #
+#Effect of the test on the amount of purchases (0 excluded)
+# mean(purchases) instead than median(purchases) used because the median was anyway always one --> mean is not a good indicator because of the outliers
+df1_buyers <- df1 %>%
+  filter(buy == 1)
+
+df1a_buyers <- df1_buyers %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases)) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(log(t_purchases) ~ bf_af*o_abtest_group, data=df1_buyers))
+
+buy_plot1_buyers <- ggplot(data= df1a_buyers, aes(x=t_activity_date, y=avg_purch_buyers, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a_buyers$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Avg N purchases per buyer", title = "Avg purchases per player per day", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_purch_buyers <- c(ci(df1_buyers$t_purchases[df1_buyers$o_abtest_group=="A" & df1_buyers$bf_af == 0], 0.95),
+               ci(df1_buyers$t_purchases[df1_buyers$o_abtest_group=="A" & df1_buyers$bf_af == 1], 0.95),
+               ci(df1_buyers$t_purchases[df1_buyers$o_abtest_group=="B" & df1_buyers$bf_af == 0], 0.95),
+               ci(df1_buyers$t_purchases[df1_buyers$o_abtest_group=="B" & df1_buyers$bf_af == 1], 0.95))
+
+means_purch_buyers <- unlist(means_purch_buyers)
+means_purch_buyers <- matrix(means_purch_buyers, byrow = T, ncol = 4)
+colnames(means_purch_buyers) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_purch_buyers <- cbind(Group,bf_af,means_purch_buyers)
+means_purch_buyers <- as.data.frame(means_purch_buyers)
+means_purch_buyers$Mean <- as.numeric(as.character(means_purch_buyers$Mean))
+means_purch_buyers$CI_lower <- as.numeric(as.character(means_purch_buyers$CI_lower))
+means_purch_buyers$CI_upper <- as.numeric(as.character(means_purch_buyers$CI_upper))
+
+buy_plot2_buyers <- qplot(x    = bf_af , y = Mean, data = means_purch_buyers, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg N purchases per buyer", title = "Avg purchase per player before / after test", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot2_buyers, buy_plot1_buyers, ncol=1, nrow = 2)
+
+# Effect of test on Expert players buyers (>= 141 days from installation) - N purchases
+df1exp1_buyers <- df1_buyers %>%
+  filter(exp == 1)
+
+df1aexp1_buyers <- df1exp1_buyers %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases)) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(log(t_purchases) ~ bf_af*o_abtest_group, data=df1exp1_buyers))
+
+buy_plot3_buyers <- ggplot(data= df1aexp1_buyers, aes(x=t_activity_date, y=avg_purch_buyers, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a_buyers$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Avg N purchases per buyer", title = "Avg purchases per player per day - Experts", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_purch_buyers <- c(ci(df1exp1_buyers$t_purchases[df1exp1_buyers$o_abtest_group=="A" & df1exp1_buyers$bf_af == 0], 0.95),
+                        ci(df1exp1_buyers$t_purchases[df1exp1_buyers$o_abtest_group=="A" & df1exp1_buyers$bf_af == 1], 0.95),
+                        ci(df1exp1_buyers$t_purchases[df1exp1_buyers$o_abtest_group=="B" & df1exp1_buyers$bf_af == 0], 0.95),
+                        ci(df1exp1_buyers$t_purchases[df1exp1_buyers$o_abtest_group=="B" & df1exp1_buyers$bf_af == 1], 0.95))
+
+means_purch_buyers <- unlist(means_purch_buyers)
+means_purch_buyers <- matrix(means_purch_buyers, byrow = T, ncol = 4)
+colnames(means_purch_buyers) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_purch_buyers <- cbind(Group,bf_af,means_purch_buyers)
+means_purch_buyers <- as.data.frame(means_purch_buyers)
+means_purch_buyers$Mean <- as.numeric(as.character(means_purch_buyers$Mean))
+means_purch_buyers$CI_lower <- as.numeric(as.character(means_purch_buyers$CI_lower))
+means_purch_buyers$CI_upper <- as.numeric(as.character(means_purch_buyers$CI_upper))
+
+buy_plot4_buyers <- qplot(x    = bf_af , y = Mean, data = means_purch_buyers, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg N purchases per buyer", title = "Avg purchase per player before / after test - Expert", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot4_buyers, buy_plot3_buyers, ncol=1, nrow = 2)
+
+# Effect of test on New players buyers (< 141 days from installation) - N purchases
+df1exp0_buyers <- df1_buyers %>%
+  filter(exp == 0)
+
+df1aexp0_buyers <- df1exp0_buyers %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases)) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(log(t_purchases) ~ bf_af*o_abtest_group, data=df1exp0_buyers))
+
+buy_plot5_buyers <- ggplot(data= df1aexp0_buyers, aes(x=t_activity_date, y=avg_purch_buyers, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a_buyers$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Avg N purchases per buyer", title = "Avg purchases per player per day - New players", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_purch_buyers <- c(ci(df1exp0_buyers$t_purchases[df1exp0_buyers$o_abtest_group=="A" & df1exp0_buyers$bf_af == 0], 0.95),
+                        ci(df1exp0_buyers$t_purchases[df1exp0_buyers$o_abtest_group=="A" & df1exp0_buyers$bf_af == 1], 0.95),
+                        ci(df1exp0_buyers$t_purchases[df1exp0_buyers$o_abtest_group=="B" & df1exp0_buyers$bf_af == 0], 0.95),
+                        ci(df1exp0_buyers$t_purchases[df1exp0_buyers$o_abtest_group=="B" & df1exp0_buyers$bf_af == 1], 0.95))
+
+means_purch_buyers <- unlist(means_purch_buyers)
+means_purch_buyers <- matrix(means_purch_buyers, byrow = T, ncol = 4)
+colnames(means_purch_buyers) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_purch_buyers <- cbind(Group,bf_af,means_purch_buyers)
+means_purch_buyers <- as.data.frame(means_purch_buyers)
+means_purch_buyers$Mean <- as.numeric(as.character(means_purch_buyers$Mean))
+means_purch_buyers$CI_lower <- as.numeric(as.character(means_purch_buyers$CI_lower))
+means_purch_buyers$CI_upper <- as.numeric(as.character(means_purch_buyers$CI_upper))
+
+buy_plot6_buyers <- qplot(x    = bf_af , y = Mean, data = means_purch_buyers, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg N purchases per buyer", title = "Avg purchase per player before / after test - New players", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot6_buyers, buy_plot5_buyers, ncol=1, nrow = 2)
+
+# Effect of test on Hardcore players buyers (>= 10 rounds per gaming day) - N purchases
+df1hc1_buyers <- df1_buyers %>%
+  filter(time == 1)
+
+df1ahc1_buyers <- df1hc1_buyers %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases)) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(log(t_purchases) ~ bf_af*o_abtest_group, data=df1hc1_buyers))
+
+buy_plot7_buyers <- ggplot(data= df1ahc1_buyers, aes(x=t_activity_date, y=avg_purch_buyers, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a_buyers$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Avg N purchases per buyer", title = "Avg purchases per player per day - Hardcore", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_purch_buyers <- c(ci(df1hc1_buyers$t_purchases[df1hc1_buyers$o_abtest_group=="A" & df1hc1_buyers$bf_af == 0], 0.95),
+                        ci(df1hc1_buyers$t_purchases[df1hc1_buyers$o_abtest_group=="A" & df1hc1_buyers$bf_af == 1], 0.95),
+                        ci(df1hc1_buyers$t_purchases[df1hc1_buyers$o_abtest_group=="B" & df1hc1_buyers$bf_af == 0], 0.95),
+                        ci(df1hc1_buyers$t_purchases[df1hc1_buyers$o_abtest_group=="B" & df1hc1_buyers$bf_af == 1], 0.95))
+
+means_purch_buyers <- unlist(means_purch_buyers)
+means_purch_buyers <- matrix(means_purch_buyers, byrow = T, ncol = 4)
+colnames(means_purch_buyers) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_purch_buyers <- cbind(Group,bf_af,means_purch_buyers)
+means_purch_buyers <- as.data.frame(means_purch_buyers)
+means_purch_buyers$Mean <- as.numeric(as.character(means_purch_buyers$Mean))
+means_purch_buyers$CI_lower <- as.numeric(as.character(means_purch_buyers$CI_lower))
+means_purch_buyers$CI_upper <- as.numeric(as.character(means_purch_buyers$CI_upper))
+
+buy_plot8_buyers <- qplot(x    = bf_af , y = Mean, data = means_purch_buyers, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg N purchases per buyer", title = "Avg purchase per player before / after test - Hardcore", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot8_buyers, buy_plot7_buyers, ncol=1, nrow = 2)
+
+# Effect of test on Random players buyers (< 10 rounds per gaming day) - N purchases
+df1hc0_buyers <- df1_buyers %>%
+  filter(time == 0)
+
+df1ahc0_buyers <- df1hc0_buyers %>%
+  select(o_abtest_group,t_activity_date,bf_af,buy,t_purchases) %>%
+  group_by(t_activity_date,o_abtest_group) %>%
+  summarise(avg_buy = mean(as.numeric(as.character(buy))), avg_purch_buyers = mean(t_purchases)) %>%
+  mutate(bf_af = as.factor(ifelse(t_activity_date < "2017-05-04", 0, 1)))
+
+summary(lm(log(t_purchases) ~ bf_af*o_abtest_group, data=df1hc0_buyers))
+
+buy_plot9_buyers <- ggplot(data= df1ahc0_buyers, aes(x=t_activity_date, y=avg_purch_buyers, color = o_abtest_group)) +
+  geom_line()+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date <= "2017-05-04"), method = "lm", se = T) +
+  geom_smooth(data=subset(df1a_buyers, t_activity_date >= "2017-05-04"), method = "lm", se = T) +
+  geom_vline(xintercept=as.numeric(df1a_buyers$t_activity_date[30]), linetype=4) +
+  labs(x= "Activity day", y = "Avg N purchases per buyer", title = "Avg purchases per player per day - Casual players", color = "Group")+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# plot for before_after
+library(gmodels)
+means_purch_buyers <- c(ci(df1hc0_buyers$t_purchases[df1hc0_buyers$o_abtest_group=="A" & df1hc0_buyers$bf_af == 0], 0.95),
+                        ci(df1hc0_buyers$t_purchases[df1hc0_buyers$o_abtest_group=="A" & df1hc0_buyers$bf_af == 1], 0.95),
+                        ci(df1hc0_buyers$t_purchases[df1hc0_buyers$o_abtest_group=="B" & df1hc0_buyers$bf_af == 0], 0.95),
+                        ci(df1hc0_buyers$t_purchases[df1hc0_buyers$o_abtest_group=="B" & df1hc0_buyers$bf_af == 1], 0.95))
+
+means_purch_buyers <- unlist(means_purch_buyers)
+means_purch_buyers <- matrix(means_purch_buyers, byrow = T, ncol = 4)
+colnames(means_purch_buyers) <- c("Mean","CI_lower","CI_upper","Std.Error")
+Group <- c("A","A","B","B")
+bf_af <- c("0","1","0","1")
+means_purch_buyers <- cbind(Group,bf_af,means_purch_buyers)
+means_purch_buyers <- as.data.frame(means_purch_buyers)
+means_purch_buyers$Mean <- as.numeric(as.character(means_purch_buyers$Mean))
+means_purch_buyers$CI_lower <- as.numeric(as.character(means_purch_buyers$CI_lower))
+means_purch_buyers$CI_upper <- as.numeric(as.character(means_purch_buyers$CI_upper))
+
+buy_plot10_buyers <- qplot(x    = bf_af , y = Mean, data = means_purch_buyers, group = Group) +
+  geom_errorbar(lwd = 0.8, aes(ymin  = CI_lower, ymax  = CI_upper, width = 0.15, color = Group)) +
+  geom_point(size = 6, aes(color = Group))+
+  scale_color_manual(values=c("dodgerblue1", "#FF4500")) +
+  labs(x="Before / After Test", y= "Avg N purchases per buyer", title = "Avg purchase per player before / after test - Casual players", color="Group")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  geom_line(lwd=0.8,aes(color=Group))
+
+library(gridExtra)
+grid.arrange(buy_plot10_buyers, buy_plot9_buyers, ncol=1, nrow = 2)
+
+# ============================================================================================ #
+# ============================================================================================ #
+
